@@ -252,37 +252,80 @@ Uploading 5750 stocks to Stocks Master ...
 
 ---
 
-## Step 9 — Connect to Claude Desktop (Optional)
+## Step 9 — Connect Both MCP Servers
 
-To use the MCP server with Claude:
+StockPulse uses a **dual-MCP architecture**:
 
-1. Open or create `~/Library/Application Support/Claude/claude_desktop_config.json`
+| Server | Role | Transport |
+|--------|------|-----------|
+| **Notion MCP** (`https://mcp.notion.com/mcp`) | All Notion reads & writes (search, fetch, create, update pages) | HTTP / OAuth |
+| **StockPulse MCP** (`python -m stockpulse serve`) | Pure computation — screening, scoring, anomaly detection, sector comparison, report generation | stdio |
 
-2. Add:
+The AI agent orchestrates between both: it reads data from Notion via the official Notion MCP, sends it to StockPulse MCP for analysis, then writes results back to Notion.
+
+### Option A — VS Code (GitHub Copilot)
+
+A `.vscode/mcp.json` is included in the repo with both servers pre-configured:
+
+```json
+{
+  "servers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    },
+    "stockpulse": {
+      "type": "stdio",
+      "command": "zsh",
+      "args": ["-c", "source .venv/bin/activate && python -m stockpulse serve"]
+    }
+  }
+}
+```
+
+When you open the project in VS Code:
+1. You'll be prompted to approve the MCP servers — click **Allow**
+2. For Notion MCP, complete the OAuth flow when prompted
+3. Both servers should show as connected in the Copilot chat panel
+
+### Option B — Claude Desktop
+
+**1. Connect Notion MCP:**
+- Open Claude Desktop → Settings → Connectors
+- Add `https://mcp.notion.com/mcp`
+- Complete the OAuth flow to authorize your Notion workspace
+
+**2. Connect StockPulse MCP:**
+
+Open or create `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
     "stockpulse": {
       "command": "/path/to/notion-mcp/.venv/bin/python",
       "args": ["-m", "stockpulse", "serve"],
-      "cwd": "/path/to/notion-mcp",
-      "env": {
-        "NOTION_TOKEN": "secret_xxxxxx",
-        "NOTION_PARENT_PAGE_ID": "your-page-id"
-      }
+      "cwd": "/path/to/notion-mcp"
     }
   }
 }
 ```
 
-3. Restart Claude Desktop
+**3.** Restart Claude Desktop
 
-4. You should now see a hammer icon (🔨) in the Claude input area — that indicates MCP tools are available
+**4.** You should see a hammer icon (🔨) in the Claude input area — that indicates MCP tools are available
 
-5. Try:
+**5.** Try:
    ```
-   Use the weekly_market_scan prompt to analyze my stock portfolio
+   Use the weekly_market_scan prompt to analyze the stock market
    ```
+
+### Option C — Cursor
+
+Add both servers in Cursor's MCP settings (Settings → MCP):
+
+- **Notion MCP**: Type `http`, URL `https://mcp.notion.com/mcp`
+- **StockPulse MCP**: Type `stdio`, command `python -m stockpulse serve`, cwd `/path/to/notion-mcp`
 
 ---
 

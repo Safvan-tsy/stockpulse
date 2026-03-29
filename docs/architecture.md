@@ -2,7 +2,9 @@
 
 ## Core Concept
 
-StockPulse India is built around a single principle: **Notion is the single source of truth**. All data flows into Notion, and all AI interactions happen through the Notion layer.
+StockPulse India is built around two principles:
+1. **Notion is the single source of truth** — All data flows into Notion, and all AI interactions read from / write to Notion.
+2. **Dual-MCP architecture** — The official **Notion MCP** server handles all Notion I/O, while a custom **StockPulse MCP** server provides pure domain computation (screening, scoring, anomaly detection). The AI agent orchestrates between both.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -23,33 +25,65 @@ StockPulse India is built around a single principle: **Notion is the single sour
 │  │  (pages written by AI agent)             │                   │
 │  └──────────────────────────────────────────┘                   │
 │                                                                  │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │ Notion API (Data Sources)
-       ┌─────────────────┼─────────────────────┐
-       │                 │                     │
-  ┌────▼────┐    ┌────────▼──────┐    ┌────────▼──────┐
-  │  MCP    │    │   Uploader    │    │    Notion     │
-  │ Server  │    │   Pipeline    │    │    Setup      │
-  │(11 tools│    │(bulk inserts) │    │(schema mgmt)  │
-  │3 prompts│    └────────┬──────┘    └───────────────┘
-  └────┬────┘             │
-       │           ┌──────▼──────┐
-       │           │   Screener  │
-       │           │  (12 rules) │
-       │           └──────┬──────┘
-       │                  │
-       │           ┌──────▼──────┐
-       │           │   Parser    │
-  ┌────▼────┐      │  (Excel →   │
-  │  Claude │      │  DataFrame) │
-  │  / GPT  │      └──────┬──────┘
-  │  (AI)   │             │
-  └─────────┘      ┌──────▼──────┐
-                   │  Workbooks  │
-                   │  (NSE/BSE   │
-                   │   .xlsx)    │
-                   └─────────────┘
+└────────────┬─────────────────────────────────────────────────────┘
+             │ Notion MCP (https://mcp.notion.com/mcp)
+             │ Official hosted server — OAuth — search, fetch,
+             │ create pages, update pages, query databases
+             │
+       ┌─────▼──────────────────────────────┐
+       │           AI AGENT                  │
+       │    (Claude / GPT / Copilot)         │
+       │                                     │
+       │  Orchestrates both MCP servers:     │
+       │  1. Fetch data via Notion MCP       │
+       │  2. Analyze via StockPulse MCP      │
+       │  3. Write back via Notion MCP       │
+       └─────┬──────────────────────────────┘
+             │ StockPulse MCP (stdio, local)
+             │ Pure computation — no Notion SDK
+             │
+       ┌─────▼──────────────────────────────┐
+       │      StockPulse MCP Server          │
+       │  ┌──────────────────────┐           │
+       │  │  screen_stock()      │           │
+       │  │  screen_multiple()   │           │
+       │  │  detect_anomalies()  │           │
+       │  │  compare_sector()    │           │
+       │  │  generate_report()   │           │
+       │  │  get_conditions()    │           │
+       │  └──────────┬───────────┘           │
+       │             │                       │
+       │  ┌──────────▼───────────┐           │
+       │  │   Screener Engine    │           │
+       │  │  (12 conditions +    │           │
+       │  │   weighted scoring)  │           │
+       │  └──────────────────────┘           │
+       └─────────────────────────────────────┘
+
+  ─────────── Separate: CLI Data Pipeline ───────────
+
+  ┌──────────────┐    ┌──────────────┐    ┌──────────┐
+  │   Uploader   │───▶│  Notion API  │    │  Notion  │
+  │  (bulk ETL)  │    │  (SDK direct)│───▶│  Setup   │
+  └──────┬───────┘    └──────────────┘    └──────────┘
+         │
+  ┌──────▼───────┐
+  │   Screener   │
+  │  (12 rules)  │
+  └──────┬───────┘
+         │
+  ┌──────▼───────┐
+  │    Parser    │
+  │ (Excel → DF) │
+  └──────┬───────┘
+         │
+  ┌──────▼───────┐
+  │  Workbooks   │
+  │  (NSE/BSE)   │
+  └──────────────┘
 ```
+
+> **Note:** The CLI data pipeline (parse → screen → upload) uses the Notion Python SDK directly for bulk ETL operations. This is separate from the MCP workflow. Notion MCP is designed for interactive AI-agent use, not bulk uploads of 100k+ rows.
 
 ---
 
@@ -143,30 +177,30 @@ Bulk-inserts stock data into Notion with rate limiting.
 
 ### 5. MCP Server (`mcp_server.py`)
 
-Exposes the Notion databases as tools for an AI agent.
+A **stateless computation engine** that works alongside the official Notion MCP server. Contains no Notion SDK calls — it receives data as JSON input and returns analysis results.
 
 **Built on:** FastMCP (from the `mcp` package — Python 3.10+ only; gracefully degrades on 3.9)
 
-**11 Tools:**
+**6 Tools (pure computation, no Notion I/O):**
 
-| Tool | Category | Reads/Writes |
-|------|----------|-------------|
-| `get_screened_stocks` | Query | Reads Stocks Master |
-| `get_stock_details` | Query | Reads Stocks Master |
-| `get_price_history` | Query | Reads Daily Prices |
-| `get_stocks_by_industry` | Query | Reads Stocks Master |
-| `list_industries` | Query | Reads Stocks Master |
-| `get_screening_conditions` | Info | (static) |
-| `get_watchlist` | Query | Reads Watchlist |
-| `add_to_watchlist` | Action | Writes Watchlist |
-| `write_analysis_report` | Action | Writes AI Reports |
-| `update_stock_ai_rating` | Action | Writes Stocks Master |
-| `detect_anomalies` | Analysis | Reads Daily Prices + Stocks Master |
+| Tool | What It Does | Input |
+|------|-------------|-------|
+| `get_screening_conditions` | Returns the 12 condition definitions | None |
+| `screen_stock` | Screens one stock, computes quality score | Stock JSON from Notion MCP |
+| `screen_multiple_stocks` | Screens many stocks, returns ranked results | Array of stock JSON |
+| `detect_anomalies` | Finds Piotroski ≥7, promoter changes, high delivery | Array of stock JSON |
+| `compare_sector` | Ranks a stock against sector peers | Stock + peers JSON |
+| `generate_report_content` | Formats analysis into markdown for Notion | Analysis data JSON |
 
-**3 Prompt Templates:**
-- `stock_deep_dive(symbol)` — Full research brief for a single stock
-- `weekly_market_scan()` — Market-wide scan, sector breakdown, top picks
-- `anomaly_investigation(symbol)` — Delivery/price anomaly deep dive
+**3 Prompt Templates (orchestrate both MCP servers):**
+- `stock_deep_dive(symbol)` — Full research brief: Notion MCP fetches data → StockPulse screens/ranks → Notion MCP saves report
+- `weekly_market_scan()` — Market-wide scan: Notion MCP queries all stocks → StockPulse ranks/detects → Notion MCP saves
+- `anomaly_investigation()` — Anomaly deep dive: Notion MCP fetches → StockPulse detects → Notion MCP saves alert
+
+**The official Notion MCP** (`https://mcp.notion.com/mcp`) provides the I/O layer:
+- `notion-search`, `notion-fetch` for reading
+- `query-a-database-view` for filtered queries
+- `create-a-page`, `update-a-page` for writing reports, watchlist, ratings
 
 ---
 
@@ -320,7 +354,7 @@ notion-mcp/
 │       ├── screener.py        # 12-condition engine + scoring
 │       ├── notion_setup.py    # DB creation, schema management
 │       ├── uploader.py        # Bulk upload to Notion
-│       ├── mcp_server.py      # FastMCP server (11 tools, 3 prompts)
+│       ├── mcp_server.py      # FastMCP server (6 computation tools, 3 prompts)
 │       ├── dashboard.py       # Notion dashboard page creator
 │       └── downloader.py      # NSE/BSE BhavCopy downloader
 ├── workbook/

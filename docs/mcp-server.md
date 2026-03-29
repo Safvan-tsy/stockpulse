@@ -1,6 +1,25 @@
 # MCP Server
 
-StockPulse ships an MCP (Model Context Protocol) server that exposes 11 tools and 3 prompt templates. This lets any MCP-compatible AI agent (Claude, GPT-4 with MCP support, etc.) interact directly with the stock data stored in Notion.
+StockPulse uses a **dual-MCP architecture**: the official **Notion MCP** server handles all Notion I/O (reading databases, creating pages, updating properties), while a custom **StockPulse MCP** server provides pure computation tools (screening, scoring, anomaly detection, report formatting). The AI agent orchestrates between both servers.
+
+```
+┌──────────────────────────────────────────────────┐
+│                   AI Agent                        │
+│           (Claude / GPT / Copilot)                │
+│                                                   │
+│  Notion MCP Tools:     StockPulse MCP Tools:      │
+│  - notion-search       - screen_stock             │
+│  - notion-fetch        - screen_multiple_stocks   │
+│  - create-a-page       - detect_anomalies         │
+│  - update-a-page       - compare_sector           │
+│  - query-a-database    - generate_report_content  │
+│  - ...                 - get_screening_conditions │
+└──────────┬─────────────────────────┬──────────────┘
+           │                         │
+           ▼                         ▼
+   Notion Workspace          Pure Python Engine
+   (5 databases)             (no Notion SDK calls)
+```
 
 ---
 
@@ -10,11 +29,35 @@ StockPulse ships an MCP (Model Context Protocol) server that exposes 11 tools an
 |-------------|-------|
 | Python 3.10+ | FastMCP requires 3.10. The rest of StockPulse works on 3.9+. |
 | `mcp` package | Install with `pip install -e ".[mcp]"` |
+| Notion MCP connected | Connect via OAuth at `https://mcp.notion.com/mcp` |
 | Notion databases populated | Run `stockpulse pipeline` first |
 
 ---
 
-## Starting the Server
+## Setting Up the Dual-MCP Architecture
+
+### 1. Connect Notion MCP (Official)
+
+Notion MCP is Notion's hosted server that gives AI tools direct access to your Notion workspace via OAuth. No local setup needed.
+
+**VS Code (GitHub Copilot):** Create `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    }
+  }
+}
+```
+
+**Claude Desktop:** Go to Settings → Connectors → Add Connector → enter `https://mcp.notion.com/mcp` and complete the OAuth flow.
+
+**Cursor:** Settings → MCP → Add new global MCP server → paste `{"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}}`
+
+### 2. Start StockPulse MCP (Custom Computation Server)
 
 ```bash
 stockpulse serve
@@ -22,130 +65,60 @@ stockpulse serve
 python -m stockpulse serve
 ```
 
-The server communicates over **stdio** (standard input/output). You won't see much in the terminal — it's waiting for an MCP client to connect. Claude Desktop manages this process automatically.
+The server communicates over **stdio** (standard input/output). 
 
----
-
-## Connecting to Claude Desktop
-
-**macOS:** Edit `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-**Windows:** Edit `%APPDATA%\Claude\claude_desktop_config.json`
-
-Add the `stockpulse` entry under `mcpServers`:
+**VS Code (GitHub Copilot):** Add to `.vscode/mcp.json`:
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    },
     "stockpulse": {
+      "type": "stdio",
       "command": "zsh",
-      "args": [
-        "-c",
-        "source /Users/safvan/Desktop/hackathons/notion-mcp/.venv/bin/activate && python -m stockpulse serve"
-      ],
-      "cwd": "/Users/safvan/Desktop/hackathons/notion-mcp",
-      "env": {
-        "NOTION_TOKEN": "ntn_i6569599185bgFqs6ZAWCvmGViBacbib6mAysWIzQO1b5W",
-        "NOTION_PARENT_PAGE_ID": "3221879420d180c785d1eb25e8956ce4"
-      }
+      "args": ["-c", "source /path/to/notion-mcp/.venv/bin/activate && python -m stockpulse serve"]
     }
   }
 }
 ```
 
-> **Tip:** Use the absolute path to `.venv/bin/python` (not just `python`) to ensure the virtual environment is used.
+**Claude Desktop:** Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
-Restart Claude Desktop. You should see a hammer icon (🔨) in the chat input — that indicates MCP tools are loaded.
+```json
+{
+  "mcpServers": {
+    "stockpulse": {
+      "command": "python",
+      "args": ["-m", "stockpulse", "serve"],
+      "cwd": "/path/to/notion-mcp"
+    }
+  }
+}
+```
+
+> **Note:** Notion MCP is configured as a Connector in Claude Desktop (Settings → Connectors), not in `claude_desktop_config.json`. StockPulse MCP goes in the JSON config file since it's a local stdio server.
 
 ---
 
-## Tools Reference
+## Why Two MCP Servers?
 
-### Query Tools (read-only)
+| Concern | Notion MCP | StockPulse MCP |
+|---------|-----------|----------------|
+| **Notion I/O** | ✅ Search, fetch, create, update pages | ❌ No Notion SDK calls |
+| **Computation** | ❌ Can't run screening algorithms | ✅ 12-condition screener, scoring, anomaly detection |
+| **Authentication** | OAuth (managed by Notion) | None needed (stateless computation) |
+| **Data access** | Full workspace access | Receives data as JSON input from AI |
 
----
-
-#### `get_screened_stocks`
-
-Fetch stocks from the Stocks Master database that pass the 12-condition screen.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `min_score` | int | 0 | Minimum quality score (0–100) |
-| `limit` | int | 50 | Maximum number of stocks to return |
-
-**Returns:** JSON array of stocks sorted by score descending.
-
-**Example:**
-```
-What are the top 20 stocks with a score above 90?
-→ Tool call: get_screened_stocks(min_score=90, limit=20)
-```
+The AI agent is the orchestrator. It fetches data from Notion using the official Notion MCP tools, passes that data to StockPulse MCP for analysis, and then writes results back to Notion using Notion MCP.
 
 ---
 
-#### `get_stock_details`
+## StockPulse MCP Tools Reference
 
-Get full fundamental data for a single stock symbol.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `symbol` | str | Stock ticker (e.g., `HCLTECH`, `TRENT`) |
-
-**Returns:** JSON object with all 27 properties from the Stocks Master database.
-
-**Example:**
-```
-Tell me about ABBOTINDIA.
-→ Tool call: get_stock_details(symbol="ABBOTINDIA")
-```
-
----
-
-#### `get_price_history`
-
-Get recent daily OHLCV + delivery data for a stock.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `symbol` | str | — | Stock ticker |
-| `days` | int | 30 | Number of trading days (max 60) |
-
-**Returns:** JSON array of daily price rows, newest first.
-
-**Example:**
-```
-Show me TRENT's price action over the last 2 weeks.
-→ Tool call: get_price_history(symbol="TRENT", days=10)
-```
-
----
-
-#### `get_stocks_by_industry`
-
-Get all screened stocks in a specific sector.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `industry` | str | Industry name (e.g., `IT - Software`, `Pharmaceuticals`) |
-
-**Returns:** JSON array of screened stocks in that industry.
-
-**Example tip:** Use `list_industries` first to see the exact industry names.
-
----
-
-#### `list_industries`
-
-Get a breakdown of all industries with screened stock counts.
-
-**Returns:** JSON object mapping industry name → stock count, sorted by count.
-
-**Example:**
-```
-Which sectors have the most fundamentally sound stocks?
-→ Tool call: list_industries()
-```
+### Computation Tools
 
 ---
 
@@ -153,83 +126,105 @@ Which sectors have the most fundamentally sound stocks?
 
 Get the definition of all 12 screening conditions.
 
+**Parameters:** None
+
 **Returns:** JSON array with field name, operator, and threshold for each condition.
 
 ---
 
-#### `get_watchlist`
+#### `screen_stock`
 
-Fetch the current watchlist.
-
-**Returns:** JSON array with stock name, notes, AI alerts, and status for each watchlist entry.
-
----
-
-### Action Tools (write to Notion)
-
----
-
-#### `add_to_watchlist`
-
-Add a stock to the Watchlist database in Notion.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `symbol` | str | — | Stock ticker |
-| `notes` | str | `""` | Reason for watching |
-| `status` | str | `"Watching"` | One of: `Watching`, `Entered`, `Exited`, `Alerted` |
-
-**Returns:** Confirmation JSON.
-
----
-
-#### `write_analysis_report`
-
-Create a new page in the AI Reports database. Supports Markdown-style headings and bullets.
+Screen one stock against the 12 conditions and compute a quality score (0–100).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `title` | str | Report title |
-| `report_type` | str | One of: `Stock Analysis`, `Weekly Summary`, `Sector Report`, `Anomaly Alert`, `Screener Report` |
-| `content` | str | Full analysis text (Markdown) |
-| `symbols` | str | Comma-separated symbols covered (optional) |
+| `stock_data` | str (JSON) | Stock properties fetched from Notion via Notion MCP |
 
-**Returns:** JSON with `page_id` and `url` of the created page.
+**Returns:** JSON with `passes_screen`, `score`, `conditions_met`, `passed`, `failed`, `unknown`.
+
+**Example workflow:**
+```
+1. AI uses Notion MCP: notion-search("HCLTECH") → gets page
+2. AI uses Notion MCP: notion-fetch(page_id) → gets all properties
+3. AI uses StockPulse MCP: screen_stock({"PE": 28.5, "EPS": 62, ...}) → screening result
+```
 
 ---
 
-#### `update_stock_ai_rating`
+#### `screen_multiple_stocks`
 
-Set the AI Rating field on a stock in the Stocks Master database.
+Screen multiple stocks at once, returning ranked results by score.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `symbol` | str | Stock ticker |
-| `rating` | str | One of: `Strong Buy`, `Buy`, `Hold`, `Avoid` |
+| `stocks_data` | str (JSON array) | Array of stock objects from Notion |
 
-**Returns:** Confirmation JSON.
-
----
-
-### Analysis Tools
+**Returns:** JSON with `results` array (sorted by score) and `summary` counts.
 
 ---
 
 #### `detect_anomalies`
 
-Scans the Stocks Master database to identify notable patterns.
+Detect notable patterns in stock data.
 
-Currently detects:
-- **High Piotroski Score** (≥ 7): indicates strong financial health across 9 accounting metrics
-- **Promoter holding changes**: any increase or decrease in insider ownership
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `stocks_data` | str (JSON array) | Array of stock objects from Notion |
 
-**Returns:** JSON with `strong_fundamentals` and `governance_flags` arrays plus a summary string.
+Detects:
+- **Piotroski Score ≥ 7**: strong fundamental quality
+- **Promoter holding changes**: governance signals
+- **High delivery %** (≥ 70%): potential institutional interest
+
+**Returns:** JSON with `strong_fundamentals`, `governance_flags`, `high_delivery`, and `summary`.
+
+---
+
+#### `compare_sector`
+
+Rank a stock against its sector peers on key metrics.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `target_stock` | str (JSON) | The stock to rank |
+| `peer_stocks` | str (JSON array) | Peer stocks from the same industry |
+
+**Returns:** JSON with per-metric rankings (ROCE, ROE, PE, Debt, Promoter Hold, Piotroski, Screen Score) and an overall sector percentile.
+
+---
+
+#### `generate_report_content`
+
+Generate structured markdown for a Notion page.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `report_type` | str | One of: `Stock Analysis`, `Weekly Summary`, `Sector Report`, `Anomaly Alert`, `Screener Report` |
+| `analysis_data` | str (JSON) | The analysis results to format into a report |
+
+**Returns:** JSON with `title`, `report_type`, `content` (markdown), and `symbols_covered`. The AI then uses Notion MCP's `create-a-page` to publish this to Notion.
+
+---
+
+## Notion MCP Tools Used
+
+These are tools provided by the official Notion MCP server (`https://mcp.notion.com/mcp`). StockPulse workflows use the following:
+
+| Tool | Usage in StockPulse |
+|------|-------------------|
+| `notion-search` | Find stocks, databases, reports by name |
+| `notion-fetch` | Get full page content and properties |
+| `query-a-database-view` | Query Stocks Master, Daily Prices, Watchlist with filters |
+| `create-a-page` | Write analysis reports, add to watchlist |
+| `update-a-page` | Set AI Rating on stocks, update watchlist status |
+
+See [Notion MCP Supported Tools](https://developers.notion.com/docs/mcp-supported-tools) for the full list.
 
 ---
 
 ## Prompt Templates
 
-Prompts are multi-step guidance templates that tell the AI agent what tools to call and what to produce. Available in Claude as conversation starters.
+Prompts are multi-step orchestration templates that tell the AI agent which tools from **both** MCP servers to call and in what order.
 
 ---
 
@@ -237,18 +232,18 @@ Prompts are multi-step guidance templates that tell the AI agent what tools to c
 
 A full research brief for a single stock.
 
-**What it instructs the AI to do:**
-1. Call `get_stock_details` for fundamentals
-2. Call `get_price_history` for price/delivery trends
-3. Call `get_stocks_by_industry` for sector peer comparison
-4. Write a comprehensive analysis covering health, trends, risks, and rating
-5. Call `write_analysis_report` to save the analysis to Notion
-6. Call `update_stock_ai_rating` to record the rating
+**Orchestration flow:**
+1. **Notion MCP** → `notion-search` + `notion-fetch` to get stock fundamentals
+2. **Notion MCP** → `query-a-database-view` to get price history
+3. **StockPulse MCP** → `screen_stock` for 12-condition screening + score
+4. **StockPulse MCP** → `detect_anomalies` for risk flags
+5. **Notion MCP** → `query-a-database-view` to get sector peers
+6. **StockPulse MCP** → `compare_sector` for ranking
+7. **StockPulse MCP** → `generate_report_content` for formatted markdown
+8. **Notion MCP** → `create-a-page` to save the report
+9. **Notion MCP** → `update-a-page` to set AI Rating
 
-**Invocation:**
-```
-Use the stock_deep_dive prompt for TRENT
-```
+**Invocation:** `Use the stock_deep_dive prompt for TRENT`
 
 ---
 
@@ -256,70 +251,66 @@ Use the stock_deep_dive prompt for TRENT
 
 A market-wide weekly scan that surfaces the best opportunities.
 
-**What it instructs the AI to do:**
-1. Call `get_screened_stocks` (min_score=70)
-2. Call `list_industries` for sector distribution
-3. Call `detect_anomalies` for notable patterns
-4. Deep dive into top 3–5 sectors using `get_stocks_by_industry`
-5. Write a "Weekly Market Pulse" report with sector highlights, top picks, and risk flags
-6. Save to Notion as a "Weekly Summary" report
+**Orchestration flow:**
+1. **Notion MCP** → `query-a-database-view` to get all screened stocks
+2. **StockPulse MCP** → `screen_multiple_stocks` for fresh rankings
+3. **StockPulse MCP** → `detect_anomalies` for pattern detection
+4. **StockPulse MCP** → `compare_sector` on top sectors
+5. **StockPulse MCP** → `generate_report_content` for the report
+6. **Notion MCP** → `create-a-page` to save the Weekly Summary
+7. **Notion MCP** → `create-a-page` to add watchlist candidates
 
-**Invocation:**
-```
-Run the weekly_market_scan prompt
-```
+**Invocation:** `Run the weekly_market_scan prompt`
 
 ---
 
-### `anomaly_investigation(symbol)`
+### `anomaly_investigation()`
 
-A deeper investigation of a specific stock's price/delivery anomalies.
+A deep investigation of data anomalies.
 
-**What it instructs the AI to do:**
-1. Call `get_price_history` for recent data
-2. Analyze delivery % vs normal levels
-3. Cross-reference with `get_stock_details` for fundamental context
-4. Identify if the anomaly is likely: institutional accumulation, distribution, or news-driven
-5. Save findings as an "Anomaly Alert" report in Notion
+**Orchestration flow:**
+1. **Notion MCP** → `query-a-database-view` to fetch stock data
+2. **StockPulse MCP** → `detect_anomalies` to find patterns
+3. **Notion MCP** → `notion-fetch` for deep dives on flagged stocks
+4. **StockPulse MCP** → `screen_stock` + `compare_sector` for analysis
+5. **StockPulse MCP** → `generate_report_content` for the report
+6. **Notion MCP** → `create-a-page` to save as Anomaly Alert
 
-**Invocation:**
-```
-Investigate price anomaly in PIXTRANS using anomaly_investigation
-```
+**Invocation:** `Investigate anomalies using the anomaly_investigation prompt`
 
 ---
 
-## Example Conversations with Claude
-
-### "Give me today's best opportunities"
-```
-User: Use get_screened_stocks with min_score=85 and tell me the top 10 stocks
-
-Claude: [calls get_screened_stocks(min_score=85, limit=10)]
-Here are the top 10 fundamentally screened stocks...
-[lists stocks with PE, ROCE, score]
-```
+## Example Conversations
 
 ### "Research a specific stock"
 ```
 User: Deep dive on ABBOTINDIA and save the report to Notion
 
-Claude: [calls get_stock_details("ABBOTINDIA")]
-[calls get_price_history("ABBOTINDIA", 30)]
-[calls get_stocks_by_industry("Pharmaceuticals")]
-[writes analysis]
-[calls write_analysis_report(...)]
-[calls update_stock_ai_rating("ABBOTINDIA", "Strong Buy")]
+Claude: [Notion MCP: notion-search("ABBOTINDIA")]
+[Notion MCP: notion-fetch(page_id) → gets fundamentals]
+[Notion MCP: query-a-database-view(Daily Prices, filter) → gets prices]
+[StockPulse MCP: screen_stock({PE: 48, EPS: 320, ...}) → score 87, passes]
+[Notion MCP: query-a-database-view(Stocks Master, industry=Pharma) → peers]
+[StockPulse MCP: compare_sector(target, peers) → 92nd percentile]
+[StockPulse MCP: generate_report_content("Stock Analysis", {...})]
+[Notion MCP: create-a-page(AI Reports DB, report_content)]
+[Notion MCP: update-a-page(stock_page_id, AI Rating="Strong Buy")]
 
 I've analyzed ABBOTINDIA and saved the report to Notion...
 ```
 
-### "Add to watchlist"
+### "Weekly market scan"
 ```
-User: Add PIXTRANS to my watchlist, I'm watching for a breakout above ₹200
+User: Run the weekly market scan
 
-Claude: [calls add_to_watchlist("PIXTRANS", "Watching for breakout above ₹200")]
-Done! PIXTRANS has been added to your Notion watchlist.
+Claude: [Notion MCP: query-a-database-view(Stocks Master, Passes Screen=true)]
+[StockPulse MCP: screen_multiple_stocks([...898 stocks...])]
+[StockPulse MCP: detect_anomalies([...data...])]
+[StockPulse MCP: generate_report_content("Weekly Summary", {...})]
+[Notion MCP: create-a-page(AI Reports DB, weekly_report)]
+[Notion MCP: create-a-page(Watchlist DB, {Stock: "TRENT", Status: "Watching"})]
+
+Weekly Market Pulse report saved to Notion with 5 watchlist candidates...
 ```
 
 ---
@@ -336,4 +327,4 @@ except ImportError:
     HAS_MCP = False
 ```
 
-When `HAS_MCP = False`, the `@_tool()` and `@_prompt()` decorators become no-ops, meaning all tool functions are still importable and callable as regular Python functions — they just aren't registered in an MCP server. The `serve` command will print a warning and exit cleanly.
+When `HAS_MCP = False`, the `@_tool()` and `@_prompt()` decorators become no-ops. Tool functions are still importable and callable as regular Python functions — they just aren't registered in an MCP server. The `serve` command will print a warning and exit cleanly.

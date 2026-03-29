@@ -58,8 +58,8 @@ def _linked_db(database_id: str) -> dict:
     """Create a linked/embedded database view block."""
     return {
         "object": "block",
-        "type": "child_database",
-        "child_database": {"title": ""},
+        "type": "link_to_page",
+        "link_to_page": {"type": "database_id", "database_id": database_id},
     }
 
 
@@ -129,6 +129,7 @@ def create_dashboard_page() -> str:
             "Stocks that pass ALL 12 conditions, ranked by quality score. "
             "Higher score = stronger fundamentals across all dimensions."
         ),
+        _linked_db(db_ids.get("screener")),
         _divider(),
 
         # Section 3: AI Analysis
@@ -137,6 +138,7 @@ def create_dashboard_page() -> str:
             "AI-generated research reports including stock deep-dives, "
             "weekly market summaries, sector analysis, and anomaly alerts."
         ),
+        _linked_db(db_ids.get("reports")),
         _divider(),
 
         # Section 4: Watchlist
@@ -145,6 +147,7 @@ def create_dashboard_page() -> str:
             "Your personal watchlist with AI-powered alerts. "
             "Add stocks you're tracking, and the AI will monitor them for notable changes."
         ),
+        _linked_db(db_ids.get("watchlist")),
         _divider(),
 
         # Section 5: Market Overview
@@ -154,6 +157,8 @@ def create_dashboard_page() -> str:
             "delivery data, and 30+ fundamental metrics including Piotroski Score, "
             "FII/DII holdings, and sector comparisons."
         ),
+        _linked_db(db_ids.get("stocks_master")),
+        _linked_db(db_ids.get("daily_prices")),
         _heading(3, "Data Pipeline"),
         _bulleted_item("Source: NSE BhavCopy + MTO files, BSE BhavCopy + Delivery data"),
         _bulleted_item("Fundamentals: PE, EPS, ROCE, ROE, Debt/Equity, Current Ratio, etc."),

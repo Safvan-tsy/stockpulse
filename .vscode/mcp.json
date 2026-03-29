@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    },
+    "stockpulse": {
+      "type": "stdio",
+      "command": "zsh",
+      "args": [
+        "-c",
+        "source ${workspaceFolder}/.venv/bin/activate && python -m stockpulse serve"
+      ]
+    }
+  }
+}

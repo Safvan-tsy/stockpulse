@@ -2,14 +2,14 @@
 
 **AI-Powered Indian Stock Intelligence on Notion** — Built for the [Notion MCP Challenge](https://dev.to/challenges/notion-2026-03-04).
 
-StockPulse takes daily price and delivery data from NSE & BSE, screens 5000+ stocks through **12 battle-tested fundamental conditions**, and uses an **AI agent (via Notion MCP)** to generate research reports, detect anomalies, and maintain a smart watchlist — all centralized in Notion.
+StockPulse takes daily price and delivery data from NSE & BSE, screens 5000+ stocks through **12 battle-tested fundamental conditions**, and uses a **dual-MCP architecture** — the official **Notion MCP** for workspace I/O plus a custom **StockPulse MCP** for domain computation — to generate research reports, detect anomalies, and maintain a smart watchlist — all centralized in Notion.
 
 ## What It Does
 
 1. **Data Pipeline** — Downloads BhavCopy + delivery data from NSE/BSE, or reads from pre-built Excel workbooks
 2. **12-Condition Screener** — Filters stocks for: profitability (PE, EPS), growth (sales, profit YoY), governance (promoter pledging), financial health (debt/equity, current ratio, ROCE)
 3. **Notion as Single Source of Truth** — 5 linked databases: Stocks Master, Daily Prices, Screener Results, Watchlist, AI Reports
-4. **AI Intelligence via MCP** — An MCP server exposes tools for an AI agent to: query screened stocks, analyze fundamentals, detect anomalies, write research reports, and manage a watchlist — all reading from and writing to Notion
+4. **Dual-MCP AI Intelligence** — The official Notion MCP (`https://mcp.notion.com/mcp`) handles all Notion reads/writes. A custom StockPulse MCP server provides pure computation: screening, scoring, anomaly detection, sector comparison, and report generation. The AI agent orchestrates between both.
 
 ## Quick Start
 
@@ -39,9 +39,29 @@ python -m stockpulse pipeline
 python -m stockpulse serve
 ```
 
-### Connect to Claude Desktop
+### Connect Both MCP Servers
 
-Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+**VS Code (GitHub Copilot):** A `.vscode/mcp.json` is included in the repo:
+
+```json
+{
+  "servers": {
+    "notion": {
+      "type": "http",
+      "url": "https://mcp.notion.com/mcp"
+    },
+    "stockpulse": {
+      "type": "stdio",
+      "command": "zsh",
+      "args": ["-c", "source .venv/bin/activate && python -m stockpulse serve"]
+    }
+  }
+}
+```
+
+**Claude Desktop:**
+1. Notion MCP: Settings → Connectors → Add `https://mcp.notion.com/mcp` → complete OAuth
+2. StockPulse MCP: Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -49,17 +69,13 @@ Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/cla
     "stockpulse": {
       "command": "python",
       "args": ["-m", "stockpulse", "serve"],
-      "cwd": "/path/to/notion-mcp",
-      "env": {
-        "NOTION_TOKEN": "your-token-here",
-        "NOTION_PARENT_PAGE_ID": "your-page-id"
-      }
+      "cwd": "/path/to/notion-mcp"
     }
   }
 }
 ```
 
-Then ask Claude: *"Use the weekly_market_scan prompt to analyze my stock portfolio"*
+Then ask Claude: *"Use the weekly_market_scan prompt to analyze the stock market"*
 
 ## CLI Commands
 
@@ -75,21 +91,32 @@ Then ask Claude: *"Use the weekly_market_scan prompt to analyze my stock portfol
 | `stockpulse serve` | Start the MCP server |
 | `stockpulse pipeline` | Full pipeline: parse → screen → upload → dashboard |
 
-## MCP Tools (for AI Agents)
+## MCP Tools (Dual-Server Architecture)
+
+### Notion MCP (Official — `https://mcp.notion.com/mcp`)
+
+Handles all Notion workspace I/O:
+
+| Tool | Usage in StockPulse |
+|------|-------------------|
+| `notion-search` | Find stocks, databases, reports by name |
+| `notion-fetch` | Get full page content and properties |
+| `query-a-database-view` | Query Stocks Master, Daily Prices, Watchlist |
+| `create-a-page` | Write analysis reports, add to watchlist |
+| `update-a-page` | Set AI Rating on stocks, update watchlist |
+
+### StockPulse MCP (Custom Computation Server)
+
+Pure domain intelligence — no Notion SDK calls:
 
 | Tool | What It Does |
 |------|-------------|
-| `get_screened_stocks` | Fetch stocks passing all 12 conditions, ranked by score |
-| `get_stock_details` | Deep fundamental data for a specific symbol |
-| `get_price_history` | Recent OHLCV + delivery data for a symbol |
-| `get_stocks_by_industry` | All screened stocks in a sector |
-| `list_industries` | Sector breakdown with stock counts |
 | `get_screening_conditions` | The 12 screening rules |
-| `get_watchlist` | Current watchlist with notes & alerts |
-| `add_to_watchlist` | Add a stock to the watchlist |
-| `write_analysis_report` | Create an AI research report in Notion |
-| `update_stock_ai_rating` | Set AI rating (Strong Buy/Buy/Hold/Avoid) |
-| `detect_anomalies` | Find unusual patterns in the data |
+| `screen_stock` | Screen one stock, compute quality score (0-100) |
+| `screen_multiple_stocks` | Screen many stocks, return ranked results |
+| `detect_anomalies` | Find Piotroski ≥7, promoter changes, high delivery |
+| `compare_sector` | Rank a stock against sector peers |
+| `generate_report_content` | Format analysis into structured markdown |
 
 ## The 12 Screening Conditions
 
@@ -111,10 +138,31 @@ Then ask Claude: *"Use the weekly_market_scan prompt to analyze my stock portfol
 ## Architecture
 
 ```
-NSE/BSE APIs → Python Data Pipeline → Notion Databases → MCP Server → AI Agent
-                                            ↕
-                                      Human-in-the-Loop
-                                   (review, watchlist, notes)
+  ┌─────────────────────────────────────────────────┐
+  │               NOTION WORKSPACE                   │
+  │  Stocks Master │ Daily Prices │ Screener Results │
+  │  Watchlist     │ AI Reports                      │
+  └──────────┬──────────────────────────────────────┘
+             │ Notion MCP (https://mcp.notion.com/mcp)
+             │ (all reads + writes)
+       ┌─────▼─────────────────────────┐
+       │          AI AGENT              │
+       │   (Claude / GPT / Copilot)     │
+       └─────┬─────────────────────────┘
+             │ StockPulse MCP (stdio, local)
+             │ (pure computation)
+       ┌─────▼─────────────────────────┐
+       │   screen_stock()               │
+       │   detect_anomalies()           │
+       │   compare_sector()             │
+       │   generate_report_content()    │
+       └───────────────────────────────┘
+
+  Data Pipeline (CLI, separate from MCP):
+  NSE/BSE → Parser → Screener → Uploader → Notion DBs
+                                     ↕
+                               Human-in-the-Loop
+                            (review, watchlist, notes)
 ```
 
 ## License
